@@ -1446,10 +1446,10 @@ async def list_resources(
 ) -> str:
     """
     List valid resources that can be used in GAQL FROM clauses.
-    
+
     Args:
         customer_id: The Google Ads customer ID as a string
-        
+
     Returns:
         Formatted list of valid resources
     """
@@ -1467,9 +1467,591 @@ async def list_resources(
         ORDER BY
             google_ads_field.name
     """
-    
+
     # Use your existing run_gaql function to execute this query
     return await run_gaql(customer_id, query)
+
+# ============================================================================
+# MUTATE OPERATIONS (Phase 1+)
+# ============================================================================
+
+@mcp.tool()
+async def create_pmax_campaign(
+    account_id: str = Field(description="Google Ads customer ID (10 digits, no dashes)"),
+    campaign_name: str = Field(description="Name of the Performance Max campaign"),
+    daily_budget_micros: int = Field(default=None, description="Daily budget in micros (1,000,000 micros = 1 currency unit)"),
+    daily_budget_currency: float = Field(default=None, description="Daily budget in actual currency (will be converted to micros)"),
+    target_roas: float = Field(default=None, description="Target Return on Ad Spend (e.g., 2.5 means 250% ROAS)"),
+    merchant_center_id: str = Field(default=None, description="Google Merchant Center account ID to link"),
+    feed_label: str = Field(default=None, description="Feed label to filter products from Merchant Center"),
+    start_date: str = Field(default=None, description="Campaign start date in YYYY-MM-DD format"),
+    end_date: str = Field(default=None, description="Campaign end date in YYYY-MM-DD format"),
+    status: str = Field(default="PAUSED", description="Initial campaign status (PAUSED or ENABLED)"),
+    final_url: str = Field(default=None, description="Final URL for the asset group"),
+    country_codes: List[str] = Field(default=None, description="Target country codes (ISO 3166-1 alpha-2)"),
+    language_codes: List[str] = Field(default=None, description="Target language codes (ISO 639-1)")
+) -> str:
+    """
+    Create a new Performance Max campaign.
+
+    This tool creates a complete Performance Max campaign with budget,
+    targeting, and optional Merchant Center integration.
+
+    Args:
+        account_id: Google Ads customer ID
+        campaign_name: Name of the campaign
+        daily_budget_micros or daily_budget_currency: Daily budget (provide one)
+        target_roas: Optional target ROAS
+        merchant_center_id: Optional Merchant Center ID to link
+        feed_label: Optional feed label for product filtering
+        start_date: Optional start date (YYYY-MM-DD)
+        end_date: Optional end date (YYYY-MM-DD)
+        status: Initial status (default: PAUSED)
+        final_url: Asset group final URL
+        country_codes: Target countries
+        language_codes: Target languages
+
+    Returns:
+        JSON with created campaign details including resource names
+
+    Example:
+        account_id: "1234567890"
+        campaign_name: "SEW | Sunglasses PMax | TH | 2025-11"
+        daily_budget_currency: 1500
+        target_roas: 2.5
+        merchant_center_id: "123456789"
+        feed_label: "promo_nov2025"
+        country_codes: ["TH"]
+        language_codes: ["th"]
+    """
+    try:
+        # Validate required parameters
+        if not daily_budget_micros and not daily_budget_currency:
+            return json.dumps({
+                "error": "Either daily_budget_micros or daily_budget_currency must be provided"
+            }, indent=2)
+
+        # Get credentials and headers
+        creds = get_credentials()
+        headers = get_headers(creds)
+
+        # Import and call the implementation
+        from mutate.pmax import create_pmax_campaign_full
+
+        result = create_pmax_campaign_full(
+            credentials=creds,
+            headers=headers,
+            account_id=account_id,
+            campaign_name=campaign_name,
+            daily_budget_micros=daily_budget_micros,
+            daily_budget_currency=daily_budget_currency,
+            target_roas=target_roas,
+            merchant_center_id=merchant_center_id,
+            feed_label=feed_label,
+            start_date=start_date,
+            end_date=end_date,
+            status=status,
+            final_url=final_url,
+            country_codes=country_codes,
+            language_codes=language_codes,
+            api_version=API_VERSION
+        )
+
+        return json.dumps(result, indent=2)
+
+    except ValueError as e:
+        logger.error(f"Validation error in create_pmax_campaign: {str(e)}")
+        return json.dumps({
+            "error": "Validation error",
+            "message": str(e)
+        }, indent=2)
+    except Exception as e:
+        logger.error(f"Error in create_pmax_campaign: {str(e)}")
+        return json.dumps({
+            "error": "Failed to create campaign",
+            "message": str(e),
+            "type": type(e).__name__
+        }, indent=2)
+
+@mcp.tool()
+async def update_campaign_budget(
+    account_id: str = Field(description="Google Ads customer ID (10 digits, no dashes)"),
+    campaign_id: str = Field(default=None, description="Campaign ID to update"),
+    campaign_resource_name: str = Field(default=None, description="Full campaign resource name (alternative to campaign_id)"),
+    new_daily_budget_micros: int = Field(default=None, description="New daily budget in micros"),
+    new_daily_budget_currency: float = Field(default=None, description="New daily budget in actual currency"),
+    adjustment_type: str = Field(default="SET", description="Type of adjustment: SET, INCREASE_BY_PERCENT, DECREASE_BY_PERCENT, etc."),
+    adjustment_value: float = Field(default=None, description="Value for adjustment (percentage or amount)")
+) -> str:
+    """
+    Update an existing campaign's budget.
+
+    This tool allows you to set a new budget or adjust the current budget
+    by percentage or absolute amount.
+
+    Args:
+        account_id: Google Ads customer ID
+        campaign_id or campaign_resource_name: Campaign identifier
+        new_daily_budget_micros or new_daily_budget_currency: New budget
+        adjustment_type: How to adjust (SET, INCREASE_BY_PERCENT, etc.)
+        adjustment_value: Amount/percentage to adjust
+
+    Returns:
+        JSON with update status and new budget value
+
+    Example:
+        account_id: "1234567890"
+        campaign_id: "9876543210"
+        adjustment_type: "INCREASE_BY_PERCENT"
+        adjustment_value: 20  # Increase budget by 20%
+    """
+    try:
+        # Get credentials and headers
+        creds = get_credentials()
+        headers = get_headers(creds)
+
+        # Import and call the implementation
+        from mutate.budgets import update_campaign_budget as update_budget_impl
+        from mutate.utils import currency_to_micros
+
+        # Convert currency to micros if provided
+        new_amount_micros = None
+        if new_daily_budget_currency:
+            new_amount_micros = currency_to_micros(new_daily_budget_currency)
+        elif new_daily_budget_micros:
+            new_amount_micros = new_daily_budget_micros
+
+        result = update_budget_impl(
+            credentials=creds,
+            headers=headers,
+            customer_id=account_id,
+            campaign_id=campaign_id,
+            campaign_resource_name=campaign_resource_name,
+            new_amount_micros=new_amount_micros,
+            adjustment_type=adjustment_type,
+            adjustment_value=adjustment_value,
+            api_version=API_VERSION
+        )
+
+        return json.dumps(result, indent=2)
+
+    except ValueError as e:
+        logger.error(f"Validation error in update_campaign_budget: {str(e)}")
+        return json.dumps({
+            "error": "Validation error",
+            "message": str(e)
+        }, indent=2)
+    except Exception as e:
+        logger.error(f"Error in update_campaign_budget: {str(e)}")
+        return json.dumps({
+            "error": "Failed to update budget",
+            "message": str(e),
+            "type": type(e).__name__
+        }, indent=2)
+
+@mcp.tool()
+async def set_target_roas(
+    account_id: str = Field(description="Google Ads customer ID (10 digits, no dashes)"),
+    campaign_id: str = Field(default=None, description="Campaign ID to update"),
+    campaign_resource_name: str = Field(default=None, description="Full campaign resource name"),
+    target_roas: float = Field(description="Target Return on Ad Spend (e.g., 2.5 means 250% ROAS)"),
+    cpc_bid_ceiling_micros: int = Field(default=None, description="Optional maximum CPC bid limit in micros"),
+    cpc_bid_floor_micros: int = Field(default=None, description="Optional minimum CPC bid limit in micros")
+) -> str:
+    """
+    Set or update target ROAS bidding strategy for a campaign.
+
+    Args:
+        account_id: Google Ads customer ID
+        campaign_id or campaign_resource_name: Campaign identifier
+        target_roas: Target ROAS value (e.g., 2.5 for 250% ROAS)
+        cpc_bid_ceiling_micros: Optional max CPC
+        cpc_bid_floor_micros: Optional min CPC
+
+    Returns:
+        JSON with update status
+
+    Example:
+        account_id: "1234567890"
+        campaign_id: "9876543210"
+        target_roas: 3.0  # 300% ROAS
+    """
+    try:
+        # Get credentials and headers
+        creds = get_credentials()
+        headers = get_headers(creds)
+
+        # Import and call the implementation
+        from mutate.bidding import set_target_roas as set_roas_impl
+
+        result = set_roas_impl(
+            credentials=creds,
+            headers=headers,
+            customer_id=account_id,
+            campaign_id=campaign_id,
+            campaign_resource_name=campaign_resource_name,
+            target_roas=target_roas,
+            cpc_bid_ceiling_micros=cpc_bid_ceiling_micros,
+            cpc_bid_floor_micros=cpc_bid_floor_micros,
+            api_version=API_VERSION
+        )
+
+        return json.dumps(result, indent=2)
+
+    except ValueError as e:
+        logger.error(f"Validation error in set_target_roas: {str(e)}")
+        return json.dumps({
+            "error": "Validation error",
+            "message": str(e)
+        }, indent=2)
+    except Exception as e:
+        logger.error(f"Error in set_target_roas: {str(e)}")
+        return json.dumps({
+            "error": "Failed to set target ROAS",
+            "message": str(e),
+            "type": type(e).__name__
+        }, indent=2)
+
+@mcp.tool()
+async def pause_campaign(
+    account_id: str = Field(description="Google Ads customer ID (10 digits, no dashes)"),
+    campaign_id: str = Field(default=None, description="Single campaign ID to pause"),
+    campaign_ids: List[str] = Field(default=None, description="Multiple campaign IDs to pause"),
+    campaign_resource_name: str = Field(default=None, description="Full campaign resource name"),
+    campaign_name_pattern: str = Field(default=None, description="Pause campaigns matching this pattern"),
+    confirm: bool = Field(default=False, description="Confirmation flag for bulk operations")
+) -> str:
+    """
+    Pause one or multiple campaigns.
+
+    Args:
+        account_id: Google Ads customer ID
+        campaign_id: Single campaign to pause
+        campaign_ids: Multiple campaigns to pause
+        campaign_resource_name: Campaign resource name
+        campaign_name_pattern: Pattern to match campaign names
+        confirm: Required for bulk operations
+
+    Returns:
+        JSON with paused campaigns status
+
+    Example:
+        account_id: "1234567890"
+        campaign_id: "9876543210"
+    """
+    try:
+        creds = get_credentials()
+        headers = get_headers(creds)
+
+        from mutate.status import pause_campaigns, find_campaigns_by_pattern
+        from mutate.utils import format_customer_id, parse_resource_name
+
+        formatted_customer_id = format_customer_id(account_id)
+
+        # Determine which campaigns to pause
+        ids_to_pause = []
+
+        if campaign_id:
+            ids_to_pause.append(campaign_id)
+        elif campaign_ids:
+            ids_to_pause.extend(campaign_ids)
+        elif campaign_resource_name:
+            parsed = parse_resource_name(campaign_resource_name)
+            ids_to_pause.append(parsed['resource_id'])
+        elif campaign_name_pattern:
+            if not confirm:
+                return json.dumps({
+                    "error": "Confirmation required",
+                    "message": "Pattern matching requires confirm=true to prevent accidental bulk operations"
+                }, indent=2)
+            ids_to_pause = find_campaigns_by_pattern(headers, formatted_customer_id, campaign_name_pattern, API_VERSION)
+        else:
+            return json.dumps({
+                "error": "No campaigns specified",
+                "message": "Provide campaign_id, campaign_ids, campaign_resource_name, or campaign_name_pattern"
+            }, indent=2)
+
+        if not ids_to_pause:
+            return json.dumps({
+                "message": "No campaigns found matching criteria"
+            }, indent=2)
+
+        result = pause_campaigns(creds, headers, formatted_customer_id, ids_to_pause, API_VERSION)
+        return json.dumps(result, indent=2)
+
+    except Exception as e:
+        logger.error(f"Error in pause_campaign: {str(e)}")
+        return json.dumps({
+            "error": "Failed to pause campaign(s)",
+            "message": str(e),
+            "type": type(e).__name__
+        }, indent=2)
+
+@mcp.tool()
+async def enable_campaign(
+    account_id: str = Field(description="Google Ads customer ID (10 digits, no dashes)"),
+    campaign_id: str = Field(default=None, description="Single campaign ID to enable"),
+    campaign_ids: List[str] = Field(default=None, description="Multiple campaign IDs to enable"),
+    campaign_resource_name: str = Field(default=None, description="Full campaign resource name"),
+    campaign_name_pattern: str = Field(default=None, description="Enable campaigns matching this pattern"),
+    confirm: bool = Field(default=False, description="Confirmation flag for bulk operations"),
+    safety_check: bool = Field(default=True, description="Perform safety checks before enabling")
+) -> str:
+    """
+    Enable (activate) one or multiple campaigns.
+
+    Args:
+        account_id: Google Ads customer ID
+        campaign_id: Single campaign to enable
+        campaign_ids: Multiple campaigns to enable
+        campaign_resource_name: Campaign resource name
+        campaign_name_pattern: Pattern to match campaign names
+        confirm: Required for bulk operations
+        safety_check: Run safety checks before enabling
+
+    Returns:
+        JSON with enabled campaigns status
+
+    Example:
+        account_id: "1234567890"
+        campaign_id: "9876543210"
+        safety_check: true
+    """
+    try:
+        creds = get_credentials()
+        headers = get_headers(creds)
+
+        from mutate.status import enable_campaigns, find_campaigns_by_pattern
+        from mutate.utils import format_customer_id, parse_resource_name
+
+        formatted_customer_id = format_customer_id(account_id)
+
+        # Determine which campaigns to enable
+        ids_to_enable = []
+
+        if campaign_id:
+            ids_to_enable.append(campaign_id)
+        elif campaign_ids:
+            ids_to_enable.extend(campaign_ids)
+        elif campaign_resource_name:
+            parsed = parse_resource_name(campaign_resource_name)
+            ids_to_enable.append(parsed['resource_id'])
+        elif campaign_name_pattern:
+            if not confirm:
+                return json.dumps({
+                    "error": "Confirmation required",
+                    "message": "Pattern matching requires confirm=true to prevent accidental bulk operations"
+                }, indent=2)
+            ids_to_enable = find_campaigns_by_pattern(headers, formatted_customer_id, campaign_name_pattern, API_VERSION)
+        else:
+            return json.dumps({
+                "error": "No campaigns specified",
+                "message": "Provide campaign_id, campaign_ids, campaign_resource_name, or campaign_name_pattern"
+            }, indent=2)
+
+        if not ids_to_enable:
+            return json.dumps({
+                "message": "No campaigns found matching criteria"
+            }, indent=2)
+
+        result = enable_campaigns(creds, headers, formatted_customer_id, ids_to_enable, safety_check, API_VERSION)
+        return json.dumps(result, indent=2)
+
+    except Exception as e:
+        logger.error(f"Error in enable_campaign: {str(e)}")
+        return json.dumps({
+            "error": "Failed to enable campaign(s)",
+            "message": str(e),
+            "type": type(e).__name__
+        }, indent=2)
+
+@mcp.tool()
+async def attach_merchant_center(
+    account_id: str = Field(description="Google Ads customer ID (10 digits, no dashes)"),
+    campaign_id: str = Field(default=None, description="Performance Max campaign ID"),
+    campaign_resource_name: str = Field(default=None, description="Full campaign resource name"),
+    merchant_center_id: str = Field(description="Google Merchant Center account ID"),
+    feed_label: str = Field(default=None, description="Optional feed label to filter products"),
+    sales_country: str = Field(default=None, description="Country code for the feed (ISO 3166-1 alpha-2)"),
+    language_code: str = Field(default=None, description="Language code for the feed (ISO 639-1)"),
+    asset_group_id: str = Field(default=None, description="Specific asset group ID to link the feed to"),
+    replace_existing: bool = Field(default=False, description="Replace existing Merchant Center link")
+) -> str:
+    """
+    Link a Google Merchant Center feed to a Performance Max campaign.
+
+    Args:
+        account_id: Google Ads customer ID
+        campaign_id or campaign_resource_name: Campaign identifier
+        merchant_center_id: Merchant Center account ID
+        feed_label: Optional product filter label
+        sales_country: Country code (e.g., "TH")
+        language_code: Language code (e.g., "th")
+        asset_group_id: Specific asset group to link
+        replace_existing: Replace existing link
+
+    Returns:
+        JSON with attachment status
+
+    Example:
+        account_id: "1234567890"
+        campaign_id: "9876543210"
+        merchant_center_id: "123456789"
+        feed_label: "promo_nov2025"
+        sales_country: "TH"
+        language_code: "th"
+    """
+    try:
+        # Get credentials
+        creds = get_credentials()
+        headers = get_headers(creds)
+
+        # Import utilities and PMax handler
+        from mutate.utils import format_customer_id, build_campaign_resource_name
+        from mutate.pmax import PerformanceMaxCampaign
+
+        # Format customer ID
+        formatted_customer_id = format_customer_id(account_id)
+
+        # Determine campaign resource name
+        if campaign_resource_name:
+            final_campaign_resource_name = campaign_resource_name
+        elif campaign_id:
+            final_campaign_resource_name = build_campaign_resource_name(formatted_customer_id, campaign_id)
+        else:
+            return json.dumps({
+                "error": "Validation error",
+                "message": "Either campaign_id or campaign_resource_name must be provided"
+            }, indent=2)
+
+        # Initialize PMax handler
+        pmax = PerformanceMaxCampaign(creds, headers, API_VERSION)
+
+        # Attach Merchant Center feed
+        result = pmax.attach_merchant_center_feed(
+            customer_id=formatted_customer_id,
+            campaign_resource_name=final_campaign_resource_name,
+            merchant_center_id=merchant_center_id,
+            feed_label=feed_label
+        )
+
+        # Add campaign info to result
+        result["account_id"] = account_id
+        result["campaign_resource_name"] = final_campaign_resource_name
+
+        logger.info(f"Successfully attached Merchant Center {merchant_center_id} to campaign {final_campaign_resource_name}")
+
+        return json.dumps(result, indent=2)
+
+    except ValueError as e:
+        logger.error(f"Validation error in attach_merchant_center: {str(e)}")
+        return json.dumps({
+            "error": "Validation error",
+            "message": str(e)
+        }, indent=2)
+    except Exception as e:
+        logger.error(f"Error in attach_merchant_center: {str(e)}")
+        return json.dumps({
+            "error": "Failed to attach Merchant Center",
+            "message": str(e),
+            "type": type(e).__name__
+        }, indent=2)
+
+
+@mcp.tool()
+async def run_gaql_query(
+    account_id: str = Field(description="Google Ads customer ID (10 digits, no dashes)"),
+    query: str = Field(description="GAQL (Google Ads Query Language) query to execute"),
+    page_size: int = Field(default=1000, description="Number of results per page (max 10000)")
+) -> str:
+    """
+    Execute a GAQL (Google Ads Query Language) query for reporting and analytics.
+
+    Use this tool to run custom queries from the GAQL Recipe Book (docs/GAQL_RECIPES.md).
+
+    Args:
+        account_id: Google Ads customer ID
+        query: GAQL query (SELECT ... FROM ... WHERE ...)
+        page_size: Results per page (1-10000)
+
+    Returns:
+        JSON with query results
+
+    Examples:
+        # Performance Max last 7 days
+        account_id: "1234567890"
+        query: "SELECT campaign.id, campaign.name, metrics.cost_micros, metrics.conversions FROM campaign WHERE campaign.advertising_channel_type = 'PERFORMANCE_MAX' AND segments.date DURING LAST_7_DAYS"
+
+        # Budget pacing today
+        account_id: "1234567890"
+        query: "SELECT campaign.name, campaign_budget.amount_micros, metrics.cost_micros FROM campaign WHERE segments.date = '2025-11-07'"
+
+    See docs/GAQL_RECIPES.md for 20+ ready-to-use query recipes.
+    """
+    try:
+        import requests
+
+        # Get credentials
+        creds = get_credentials()
+        headers = get_headers(creds)
+
+        # Import utilities
+        from mutate.utils import format_customer_id
+
+        # Format customer ID
+        formatted_customer_id = format_customer_id(account_id)
+
+        # Build request
+        url = f"https://googleads.googleapis.com/{API_VERSION}/customers/{formatted_customer_id}/googleAds:search"
+
+        payload = {
+            "query": query,
+            "pageSize": min(page_size, 10000)
+        }
+
+        logger.info(f"Executing GAQL query for customer {formatted_customer_id}")
+        logger.debug(f"Query: {query}")
+
+        response = requests.post(url, headers=headers, json=payload)
+
+        if response.status_code != 200:
+            error_msg = f"Failed to execute query: {response.text}"
+            logger.error(error_msg)
+            return json.dumps({
+                "error": "Failed to execute GAQL query",
+                "message": response.text,
+                "status_code": response.status_code,
+                "query": query
+            }, indent=2)
+
+        result = response.json()
+
+        # Count results
+        result_count = len(result.get('results', []))
+        logger.info(f"Query returned {result_count} results")
+
+        # Add metadata
+        response_data = {
+            "success": True,
+            "account_id": account_id,
+            "result_count": result_count,
+            "results": result.get('results', []),
+            "field_mask": result.get('fieldMask'),
+            "total_results_count": result.get('totalResultsCount'),
+            "next_page_token": result.get('nextPageToken')
+        }
+
+        return json.dumps(response_data, indent=2)
+
+    except Exception as e:
+        logger.error(f"Error in run_gaql_query: {str(e)}")
+        return json.dumps({
+            "error": "Failed to execute GAQL query",
+            "message": str(e),
+            "type": type(e).__name__,
+            "query": query
+        }, indent=2)
+
 
 if __name__ == "__main__":
     # Start the MCP server on stdio transport
